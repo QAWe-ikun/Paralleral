@@ -11,3 +11,7 @@
 
 # bin
 **/bin/
+
+# Claude
+.claude/
+CLAUDE.md
