@@ -4,6 +4,7 @@
 $MPIEXEC = "D:\Microsoft MPI\Bin\mpiexec.exe"
 $ROW_EXE = "D:\experiment\Parallel\task2\bin\mpi_collective_mat_mul.exe"
 $COL_EXE = "D:\experiment\Parallel\task2\bin\mpi_col_distrib_mat_mul.exe"
+$BLOCK_EXE = "D:\experiment\Parallel\task2\bin\mpi_2d_block_mat_mul.exe"
 $SERIAL_EXE = "D:\experiment\Parallel\task2\bin\serial_mat_mul.exe"
 
 $proc_counts = @(1, 2, 4, 8, 16)
@@ -71,42 +72,99 @@ Write-Host "============================================`n" -ForegroundColor Cya
 $col_results = @{}
 
 foreach ($procs in $proc_counts) {
-    if ($procs -ne 1) {  # Skip serial test for column-wise (not applicable)
-        $col_results[$procs] = @{}
-        foreach ($size in $matrix_sizes) {
-            Write-Host "Running (Column-wise): $procs procs, size=$size ..." -ForegroundColor Gray
-
-            $raw = & $MPIEXEC -n $procs $COL_EXE $size 2>&1
-            $output = $raw | Out-String
-            Write-Host $output
-
-            $serial_time = 0.0
-            $compute_time = 0.0
-            $total_time = 0.0
-
-            foreach ($line in $raw) {
-                if ($line -match 'Serial Time:\s*([\d.]+)') {
-                    $serial_time = [double]::Parse($Matches[1], [System.Globalization.CultureInfo]::InvariantCulture)
-                }
-                if ($line -match 'Compute Time:\s*([\d.]+)') {
-                    $compute_time = [double]::Parse($Matches[1], [System.Globalization.CultureInfo]::InvariantCulture)
-                }
-                if ($line -match 'Total Time:\s*([\d.]+)') {
-                    $total_time = [double]::Parse($Matches[1], [System.Globalization.CultureInfo]::InvariantCulture)
-                }
-            }
-
-            $effective_time = $total_time
-
-            $col_results[$procs][$size] = @{
-                Serial = $serial_time
-                Total = $total_time
-                Effective = $effective_time
-            }
-
-            Write-Host "  [Serial=$serial_time, Total=$total_time, Effective=$effective_time]" -ForegroundColor Yellow
-            Write-Host ""
+    $col_results[$procs] = @{}
+    foreach ($size in $matrix_sizes) {
+        if ($procs -eq 1) {
+            # 1 个进程时复用行划分的数据（因为都是串行执行）
+            $col_results[$procs][$size] = $row_results[$procs][$size]
+            Write-Host "Running (Column-wise): $procs procs, size=$size ... (reusing row-wise data)" -ForegroundColor Gray
+            continue
         }
+        
+        Write-Host "Running (Column-wise): $procs procs, size=$size ..." -ForegroundColor Gray
+
+        $raw = & $MPIEXEC -n $procs $COL_EXE $size 2>&1
+        $output = $raw | Out-String
+        Write-Host $output
+
+        $serial_time = 0.0
+        $compute_time = 0.0
+        $total_time = 0.0
+
+        foreach ($line in $raw) {
+            if ($line -match 'Serial Time:\s*([\d.]+)') {
+                $serial_time = [double]::Parse($Matches[1], [System.Globalization.CultureInfo]::InvariantCulture)
+            }
+            if ($line -match 'Compute Time:\s*([\d.]+)') {
+                $compute_time = [double]::Parse($Matches[1], [System.Globalization.CultureInfo]::InvariantCulture)
+            }
+            if ($line -match 'Total Time:\s*([\d.]+)') {
+                $total_time = [double]::Parse($Matches[1], [System.Globalization.CultureInfo]::InvariantCulture)
+            }
+        }
+
+        $effective_time = $total_time
+
+        $col_results[$procs][$size] = @{
+            Serial = $serial_time
+            Total = $total_time
+            Effective = $effective_time
+        }
+
+        Write-Host "  [Serial=$serial_time, Total=$total_time, Effective=$effective_time]" -ForegroundColor Yellow
+        Write-Host ""
+    }
+}
+
+# 添加2D Block测试
+Write-Host "`n============================================" -ForegroundColor Cyan
+Write-Host "  MPI Collective Matrix Multiplication - Performance Test (2D Block Distribution)" -ForegroundColor Cyan
+Write-Host "============================================`n" -ForegroundColor Cyan
+
+$block_results = @{}
+
+foreach ($procs in $proc_counts) {
+    $block_results[$procs] = @{}
+    foreach ($size in $matrix_sizes) {
+        if ($procs -eq 1) {
+            # 1 个进程时复用行划分的数据（因为都是串行执行）
+            $block_results[$procs][$size] = $row_results[$procs][$size]
+            Write-Host "Running (2D Block): $procs procs, size=$size ... (reusing row-wise data)" -ForegroundColor Gray
+            continue
+        }
+        
+        Write-Host "Running (2D Block): $procs procs, size=$size ..." -ForegroundColor Gray
+
+        $raw = & $MPIEXEC -n $procs $BLOCK_EXE $size 2>&1
+        $output = $raw | Out-String
+        Write-Host $output
+
+        $serial_time = 0.0
+        $compute_time = 0.0
+        $total_time = 0.0
+
+        foreach ($line in $raw) {
+            if ($line -match 'Serial Time:\s*([\d.]+)') {
+                $serial_time = [double]::Parse($Matches[1], [System.Globalization.CultureInfo]::InvariantCulture)
+            }
+            if ($line -match 'Compute Time:\s*([\d.]+)') {
+                $compute_time = [double]::Parse($Matches[1], [System.Globalization.CultureInfo]::InvariantCulture)
+            }
+            if ($line -match 'Total Time:\s*([\d.]+)') {
+                $total_time = [double]::Parse($Matches[1], [System.Globalization.CultureInfo]::InvariantCulture)
+            }
+        }
+
+        $effective_time = $total_time
+
+        $block_results[$procs][$size] = @{
+            Serial = $serial_time
+            Total = $total_time
+            Effective = $effective_time
+        }
+
+        Write-Host "  [Serial=$serial_time, Total=$total_time, Effective=$effective_time]" -ForegroundColor Yellow
+        Write-Host ""
     }
 }
 
@@ -136,20 +194,31 @@ Write-Host "进程数`t128`t256`t512`t1024`t2048" -ForegroundColor Green
 Write-Host "-----`t---`t---`t---`t----`t-----"
 
 foreach ($procs in $proc_counts) {
-    if ($procs -ne 1) {  # Skip serial for column-wise
-        $line = "$procs`t"
-        foreach ($size in $matrix_sizes) {
-            if ($col_results[$procs][$size]) {
-                $et = $col_results[$procs][$size].Effective
-                $line += ("{0:F3}`t" -f $et)
-            } else {
-                $line += "N/A`t"
-            }
-        }
-        Write-Host $line -ForegroundColor Green
-    } else {
-        Write-Host "$procs`tN/A`tN/A`tN/A`tN/A`tN/A" -ForegroundColor Green
+    $line = "$procs`t"
+    foreach ($size in $matrix_sizes) {
+        $et = $col_results[$procs][$size].Effective
+        $line += ("{0:F3}`t" -f $et)
     }
+    Write-Host $line -ForegroundColor Green
+}
+
+# Print 2D Block distribution table
+Write-Host "`n============================================" -ForegroundColor Yellow
+Write-Host "  Performance Table - 2D Block Distribution (Time in seconds)" -ForegroundColor Yellow
+Write-Host "============================================`n" -ForegroundColor Yellow
+
+Write-Host "进程数`t128`t256`t512`t1024`t2048" -ForegroundColor Green
+Write-Host "-----`t---`t---`t---`t----`t-----"
+
+foreach ($procs in $proc_counts) {
+
+    $line = "$procs`t"
+    foreach ($size in $matrix_sizes) {
+        $et = $block_results[$procs][$size].Effective
+        $line += ("{0:F3}`t" -f $et)
+    }
+    Write-Host $line -ForegroundColor Green
+
 }
 
 # Speedup table for Row-wise distribution
@@ -163,13 +232,13 @@ Write-Host "-----`t---`t---`t---`t----`t-----"
 foreach ($procs in $proc_counts) {
     $line = "$procs`t"
     foreach ($size in $matrix_sizes) {
-        $st = $row_results[1][$size].Serial  # 从进程数1获取串行时间
+        $st = $row_results[1][$size].Serial  # 从进程数 1 获取串行时间
         $et = $row_results[$procs][$size].Effective
-        if ($et -gt 0.00001) {
+        if ($et -gt 0) {
             $speedup = $st / $et
             $line += ("{0:F2}x`t" -f $speedup)
         } else {
-            $line += "N/A`t"
+            $line += "1.00x`t"
         }
     }
     Write-Host $line -ForegroundColor Green
@@ -184,26 +253,42 @@ Write-Host "进程数`t128`t256`t512`t1024`t2048" -ForegroundColor Green
 Write-Host "-----`t---`t---`t---`t----`t-----"
 
 foreach ($procs in $proc_counts) {
-    if ($procs -ne 1) {  # Skip serial for column-wise
-        $line = "$procs`t"
-        foreach ($size in $matrix_sizes) {
-            $st = $row_results[1][$size].Serial  # Use serial time from row-wise as baseline
-            if ($col_results[$procs][$size]) {
-                $et = $col_results[$procs][$size].Effective
-                if ($et -gt 0.00001) {
-                    $speedup = $st / $et
-                    $line += ("{0:F2}x`t" -f $speedup)
-                } else {
-                    $line += "N/A`t"
-                }
-            } else {
-                $line += "N/A`t"
-            }
+    $line = "$procs`t"
+    foreach ($size in $matrix_sizes) {
+        $st = $row_results[1][$size].Serial  # Use serial time from row-wise as baseline
+        $et = $col_results[$procs][$size].Effective
+        if ($et -gt 0) {
+            $speedup = $st / $et
+            $line += ("{0:F2}x`t" -f $speedup)
+        } else {
+            $line += "1.00x`t"
         }
-        Write-Host $line -ForegroundColor Green
-    } else {
-        Write-Host "$procs`tN/A`tN/A`tN/A`tN/A`tN/A" -ForegroundColor Green
     }
+    Write-Host $line -ForegroundColor Green
+}
+
+# Speedup table for 2D Block distribution (relative to serial)
+Write-Host "`n============================================" -ForegroundColor Yellow
+Write-Host "  Speedup (2D Block Distribution) - Serial Time / Effective Time" -ForegroundColor Yellow
+Write-Host "============================================`n" -ForegroundColor Yellow
+
+Write-Host "进程数`t128`t256`t512`t1024`t2048" -ForegroundColor Green
+Write-Host "-----`t---`t---`t---`t----`t-----"
+
+foreach ($procs in $proc_counts) {
+
+    $line = "$procs`t"
+    foreach ($size in $matrix_sizes) {
+        $st = $row_results[1][$size].Serial  # Use serial time from row-wise as baseline
+        $et = $block_results[$procs][$size].Effective
+        if ($et -gt 0) {
+            $speedup = $st / $et
+            $line += ("{0:F2}x`t" -f $speedup)
+        } else {
+            $line += "1.00x`t"
+        }
+    }
+    Write-Host $line -ForegroundColor Green
 }
 
 # Comparison between Row-wise and Column-wise distributions
@@ -216,26 +301,45 @@ Write-Host "进程数`t128`t256`t512`t1024`t2048" -ForegroundColor Green
 Write-Host "-----`t---`t---`t---`t----`t-----"
 
 foreach ($procs in $proc_counts) {
-    if ($procs -ne 1) {  # Skip serial for column-wise
-        $line = "$procs`t"
-        foreach ($size in $matrix_sizes) {
-            $row_time = $row_results[$procs][$size].Effective
-            if ($col_results[$procs][$size]) {
-                $col_time = $col_results[$procs][$size].Effective
-                if ($col_time -gt 0.00001) {
-                    $ratio = $row_time / $col_time
-                    $line += ("{0:F2}`t" -f $ratio)
-                } else {
-                    $line += "N/A`t"
-                }
-            } else {
-                $line += "N/A`t"
-            }
+    $line = "$procs`t"
+    foreach ($size in $matrix_sizes) {
+        $row_time = $row_results[$procs][$size].Effective
+        $col_time = $col_results[$procs][$size].Effective
+        if ($col_time -gt 0) {
+            $ratio = $row_time / $col_time
+            $line += ("{0:F2}`t" -f $ratio)
+        } else {
+            $line += "1.00`t"
         }
-        Write-Host $line -ForegroundColor Green
-    } else {
-        Write-Host "$procs`tN/A`tN/A`tN/A`tN/A`tN/A" -ForegroundColor Green
     }
+    Write-Host $line -ForegroundColor Green
+
+}
+
+# Comparison between Row-wise and 2D Block distributions
+Write-Host "`n============================================" -ForegroundColor Yellow
+Write-Host "  Comparison: Row-wise vs 2D Block Distribution" -ForegroundColor Yellow
+Write-Host "  (Ratio: Row-wise Time / 2D Block Time)" -ForegroundColor Yellow
+Write-Host "============================================`n" -ForegroundColor Yellow
+
+Write-Host "进程数`t128`t256`t512`t1024`t2048" -ForegroundColor Green
+Write-Host "-----`t---`t---`t---`t----`t-----"
+
+foreach ($procs in $proc_counts) {
+
+    $line = "$procs`t"
+    foreach ($size in $matrix_sizes) {
+        $row_time = $row_results[$procs][$size].Effective
+        $block_time = $block_results[$procs][$size].Effective
+        if ($block_time -gt 0) {
+            $ratio = $row_time / $block_time
+            $line += ("{0:F2}`t" -f $ratio)
+        } else {
+            $line += "1.00`t"
+        }
+    }
+    Write-Host $line -ForegroundColor Green
+
 }
 
 Write-Host ""

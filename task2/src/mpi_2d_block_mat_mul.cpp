@@ -1,7 +1,12 @@
 #include "D:\Microsoft SDKs\MPI\Include\mpi.h"
-#include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
+#include <iostream>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <cctype>
+
+using namespace std;
 
 /*
  * MPI 集合通信实现并行通用矩阵乘法 C = A × B
@@ -10,13 +15,45 @@
  * 使用 MPI_Type_create_struct 聚合进程内变量后通信
  */
 
-// 定义结构体来聚合矩阵尺寸和其他参数
-typedef struct {
+class MatrixParams
+{
+public:
     int m, n, k;
     int rows;  // 该进程需要处理的行数
     int cols;  // 该进程需要处理的列数
     double compute_time;  // 计算时间
-} MatrixParams;
+
+    static MPI_Datatype MPI_type;
+
+    static void buildMPIType();
+};
+
+MPI_Datatype MatrixParams::MPI_type;
+
+void MatrixParams::buildMPIType()
+{
+    // 创建一个临时对象来获取字段地址
+    MatrixParams temp;
+
+    // 使用两个块：5 个连续的 int (m,n,k,rows,cols) + 1 个 double (compute_time)
+    MPI_Datatype types[2] = {MPI_INT, MPI_DOUBLE};
+    int block_lengths[2] = {5, 1};
+    MPI_Aint displacements[2];
+
+    // 获取各个字段相对于结构体起始地址的偏移
+    MPI_Aint base_address;
+    MPI_Get_address(&temp, &base_address);
+    MPI_Get_address(&temp.m, &displacements[0]);            // 第一个 int 的位置
+    MPI_Get_address(&temp.compute_time, &displacements[1]); // double 的位置
+
+    // 调整偏移量为相对偏移
+    displacements[0] -= base_address;
+    displacements[1] -= base_address;
+
+    // 创建结构化 MPI 数据类型
+    MPI_Type_create_struct(2, block_lengths, displacements, types, &MPI_type);
+    MPI_Type_commit(&MPI_type);
+}
 
 static double *alloc_matrix(int rows, int cols) {
   double *m = (double *)malloc((size_t)rows * cols * sizeof(double));
@@ -30,22 +67,6 @@ static double *alloc_matrix(int rows, int cols) {
 static void fill_random(double *mat, int rows, int cols) {
   for (int i = 0; i < rows * cols; i++)
     mat[i] = (double)rand() / RAND_MAX;
-}
-
-static void print_matrix(const char *name, double *mat, int rows, int cols) {
-  printf("=== %s (%d x %d) ===\n", name, rows, cols);
-  int max_print = 8;
-  int pr = (rows <= max_print) ? rows : max_print;
-  int pc = (cols <= max_print) ? cols : max_print;
-  for (int i = 0; i < pr; i++) {
-    for (int j = 0; j < pc; j++)
-      printf("%8.4f ", mat[i * cols + j]);
-    if (pc < cols)
-      printf("... ");
-    printf("\n");
-  }
-  if (pr < rows)
-    printf("...\n");
 }
 
 /* 串行矩阵乘法 C = A × B (ikj 顺序，缓存友好) */
@@ -159,28 +180,8 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  // 创建自定义结构体数据类型
-  MPI_Datatype MatrixParamsType;
-  MPI_Datatype type[5] = {MPI_INT, MPI_INT, MPI_INT, MPI_INT, MPI_DOUBLE};
-  int blocklen[5] = {1, 1, 1, 1, 1};
-  MPI_Aint disp[5];
-
-  // 计算每个字段相对于结构体起始地址的偏移量
-  MatrixParams dummy;
-  MPI_Get_address(&dummy.m, &disp[0]);
-  MPI_Get_address(&dummy.n, &disp[1]);
-  MPI_Get_address(&dummy.k, &disp[2]);
-  MPI_Get_address(&dummy.cols, &disp[3]);
-  MPI_Get_address(&dummy.compute_time, &disp[4]);
-
-  // 使偏移量相对于结构体开头为基准
-  for (int i = 1; i < 5; i++) {
-      disp[i] = disp[i] - disp[0];
-  }
-  disp[0] = 0;
-
-  MPI_Type_create_struct(5, blocklen, disp, type, &MatrixParamsType);
-  MPI_Type_commit(&MatrixParamsType);
+  // 初始化自定义MPI数据类型 (必须在所有进程上执行)
+  MatrixParams::buildMPIType();
 
   // 计算2D块划分信息
   int p_rows, p_cols;
@@ -201,45 +202,65 @@ int main(int argc, char **argv) {
     printf("Matrix size: A(%d x %d) * B(%d x %d) = C(%d x %d)\n", m, n, n, k, m, k);
     printf("Processes: %d (%d x %d processor grid)\n", num_procs, p_rows, p_cols);
 
-    /* 打印输入矩阵（小规模时） */
-    if (m <= 16 && n <= 16 && k <= 16) {
-      print_matrix("Matrix A", A, m, n);
-      print_matrix("Matrix B", B, n, k);
-    }
-
     /* ===== 集合通信分发数据 ===== */
     double t_comm_start = MPI_Wtime();
 
     // 广播 B 矩阵给所有进程
     MPI_Bcast(B, n * k, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
-    // 使用 struct 发送矩阵参数给各进程
-    MatrixParams params;
-    params.m = m;
-    params.n = n;
-    params.k = k;
-    params.rows = rows;
-    params.cols = cols;
-
-    // 广播矩阵参数（使用自定义结构体类型）
-    MPI_Bcast(&params, 1, MatrixParamsType, 0, MPI_COMM_WORLD);
+    // 广播矩阵参数（分别广播每个字段，避免 MPI 类型大小不一致问题）
+    int params_arr[5];
+    params_arr[0] = m;
+    params_arr[1] = n;
+    params_arr[2] = k;
+    params_arr[3] = rows;
+    params_arr[4] = cols;
+    MPI_Bcast(params_arr, 5, MPI_INT, 0, MPI_COMM_WORLD);
 
     // 发送 grid dimensions
     int grid_dims[2] = {p_rows, p_cols};
     MPI_Bcast(grid_dims, 2, MPI_INT, 0, MPI_COMM_WORLD);
 
-    double t_comm_end = MPI_Wtime();
-    double comm_time = t_comm_end - t_comm_start;
+    // 准备 Scatterv 参数：按行块分发 A 矩阵
+    int *sendcounts = (int *)malloc(num_procs * sizeof(int));
+    int *displs = (int *)malloc(num_procs * sizeof(int));
+
+    for (int r = 0; r < num_procs; r++) {
+      int r_start_row, r_rows, r_start_col, r_cols;
+      int r_p_rows, r_p_cols;
+      get_2d_block_info(r, num_procs, m, n, k, &r_start_row, &r_rows,
+                        &r_start_col, &r_cols, &r_p_rows, &r_p_cols);
+      sendcounts[r] = r_rows * n;  // r_rows 行，每行 n 个元素
+      displs[r] = r_start_row * n; // 起始行偏移
+    }
+
+    // Root 进程分配 A_full 用于 Scatterv
+    double *A_full = A; // 直接使用已分配的 A 矩阵
+
+    // 从数组恢复参数
+    MatrixParams params;
+    params.m = params_arr[0];
+    params.n = params_arr[1];
+    params.k = params_arr[2];
+    params.rows = params_arr[3];
+    params.cols = params_arr[4];
 
     /* ===== 各进程独立计算 ===== */
-    // 每个进程只计算其负责的A块与整个B矩阵的乘积部分
+    // 每个进程只计算其负责的 A 块与整个 B 矩阵的乘积部分
+    // 使用 Scatterv 分发 A 的行块
     double *A_local = alloc_matrix(rows, n); // 整行数据
-    // Copy the appropriate rows from global A to local A
-    for (int i = 0; i < rows; i++) {
-        for (int j = 0; j < n; j++) {
-            A_local[i * n + j] = A[(start_row + i) * n + j];
-        }
-    }
+
+    // 开始 Scatterv 通信计时
+    double t_scatter_start = MPI_Wtime();
+    MPI_Scatterv(A_full, sendcounts, displs, MPI_DOUBLE, A_local, rows * n,
+                 MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    double t_scatter_end = MPI_Wtime();
+
+    free(sendcounts);
+    free(displs);
+
+    double t_comm_end = MPI_Wtime();
+    double comm_time = t_scatter_end - t_scatter_start;
 
     double *C_local = alloc_matrix(rows, k);
     double t_compute_start = MPI_Wtime();
@@ -253,24 +274,36 @@ int main(int argc, char **argv) {
     /* ===== 收集结果 ===== */
     double t_gather_start = MPI_Wtime();
 
-    // 各进程发送自己的 C_local 回汇总到全局 C 矩阵
-    // 使用 MPI_Allgather-like approach to collect blocks properly
-    // Each process sends its result rows back to be assembled in C
-    for (int dest_proc = 0; dest_proc < num_procs; dest_proc++) {
-        int dest_start_row, dest_rows, dest_start_col, dest_cols;
-        int dest_p_rows, dest_p_cols;
-        get_2d_block_info(dest_proc, num_procs, m, n, k,
-                         &dest_start_row, &dest_rows, &dest_start_col, &dest_cols,
-                         &dest_p_rows, &dest_p_cols);
+    // 非 Root 进程先发送 C_local 到 Root
+    if (rank != 0) {
+      MPI_Send(C_local, rows * k, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD);
+    }
 
-        if (rank == dest_proc) {
-            // Copy my local result to the appropriate place in global C
-            for (int i = 0; i < rows; i++) {
-                for (int j = 0; j < k; j++) {
-                    C[(start_row + i) * k + j] = C_local[i * k + j];
-                }
-            }
+    // Root 进程接收所有其他进程的数据并组装到 C
+    if (rank == 0) {
+      // 先复制自己的部分
+      for (int i = 0; i < rows; i++) {
+        for (int j = 0; j < k; j++) {
+          C[(start_row + i) * k + j] = C_local[i * k + j];
         }
+      }
+      // 接收其他进程的数据
+      for (int r = 1; r < num_procs; r++) {
+        int r_start_row, r_rows, r_start_col, r_cols;
+        int r_p_rows, r_p_cols;
+        get_2d_block_info(r, num_procs, m, n, k, &r_start_row, &r_rows,
+                          &r_start_col, &r_cols, &r_p_rows, &r_p_cols);
+        double *recv_buf = alloc_matrix(r_rows, k);
+        MPI_Recv(recv_buf, r_rows * k, MPI_DOUBLE, r, 0, MPI_COMM_WORLD,
+                 MPI_STATUS_IGNORE);
+        // 复制到 C 的正确位置
+        for (int i = 0; i < r_rows; i++) {
+          for (int j = 0; j < k; j++) {
+            C[(r_start_row + i) * k + j] = recv_buf[i * k + j];
+          }
+        }
+        free(recv_buf);
+      }
     }
 
     double t_gather_end = MPI_Wtime();
@@ -281,11 +314,6 @@ int main(int argc, char **argv) {
     printf("Compute Time:  %.6f seconds (pure computation)\n", compute_time);
     printf("Gather Time:   %.6f seconds\n", gather_time);
     printf("Total Time:    %.6f seconds\n", end_to_end_time);
-
-    /* 打印结果矩阵（小规模时） */
-    if (m <= 16 && k <= 16) {
-      print_matrix("Matrix C", C, m, k);
-    }
 
     /* 验证正确性：串行计算并比较 */
     if (m <= 512 && n <= 512 && k <= 512) {
@@ -315,11 +343,18 @@ int main(int argc, char **argv) {
     double t_serial_end = MPI_Wtime();
     double serial_time = t_serial_end - t_serial_start;
 
+    // Use MPI_Reduce to get the maximum compute time across all processes
+    double max_compute_time;
+    MPI_Reduce(&compute_time, &max_compute_time, 1, MPI_DOUBLE, MPI_MAX, 0,
+               MPI_COMM_WORLD);
+
     printf("Serial Time:   %.6f seconds\n", serial_time);
-    if (end_to_end_time > 0.00001)
-      printf("Speedup:       %.2fx\n", serial_time / end_to_end_time);
+    // Speedup based on pure compute time (consistent with task1)
+    if (max_compute_time > 0.00001)
+      printf("Speedup (pure compute):  %.2fx\n",
+             serial_time / max_compute_time);
     else
-      printf("Speedup:       N/A (too fast)\n");
+      printf("Speedup (pure compute):  N/A (too fast)\n");
 
     free(A);
     free(B);
@@ -327,32 +362,58 @@ int main(int argc, char **argv) {
     free(A_local);
     free(C_local);
   } else {
-    /* ==================== 非Root进程 ==================== */
-    // 接收 B 矩阵（广播）
+    /* ==================== 非 Root 进程 ==================== */
+    // 先分配 B 矩阵缓冲区（与 Root 进程同步执行 MPI_Bcast）
+    // m, n, k 已经在 main 函数开头由所有进程解析
     double *B_local = alloc_matrix(n, k);
     MPI_Bcast(B_local, n * k, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
-    // 接收矩阵参数（使用自定义结构体类型）
-    MatrixParams params;
-    MPI_Bcast(&params, 1, MatrixParamsType, 0, MPI_COMM_WORLD);
+    // 接收矩阵参数（分别接收每个字段）
+    int params_arr[5];
+    MPI_Bcast(params_arr, 5, MPI_INT, 0, MPI_COMM_WORLD);
 
     // 接收 grid dimensions
     int grid_dims[2];
     MPI_Bcast(grid_dims, 2, MPI_INT, 0, MPI_COMM_WORLD);
-    p_rows = grid_dims[0];
-    p_cols = grid_dims[1];
+    int p_rows = grid_dims[0];
+    int p_cols = grid_dims[1];
+
+    // 从数组恢复参数
+    MatrixParams params;
+    params.m = params_arr[0];
+    params.n = params_arr[1];
+    params.k = params_arr[2];
+    params.rows = params_arr[3];
+    params.cols = params_arr[4];
 
     int m_local = params.m, n_local = params.n, k_local = params.k;
-    rows = params.rows;
-    cols = params.cols;
+    int rows = params.rows, cols = params.cols;
 
-    // 重新计算自己的块信息（因为在非root进程中原始计算可能没执行）
+    // 重新计算自己的块信息
+    int start_row, start_col;
     get_2d_block_info(rank, num_procs, m_local, n_local, k_local,
                      &start_row, &rows, &start_col, &cols, &p_rows, &p_cols);
 
-    // 接收 A 矩阵的相应行
+    // 准备 Scatterv 参数（与 Root 进程相同）
+    int *sendcounts = (int *)malloc(num_procs * sizeof(int));
+    int *displs = (int *)malloc(num_procs * sizeof(int));
+
+    for (int r = 0; r < num_procs; r++) {
+      int r_start_row, r_rows, r_start_col, r_cols;
+      int r_p_rows, r_p_cols;
+      get_2d_block_info(r, num_procs, m_local, n_local, k_local, &r_start_row,
+                        &r_rows, &r_start_col, &r_cols, &r_p_rows, &r_p_cols);
+      sendcounts[r] = r_rows * n_local;
+      displs[r] = r_start_row * n_local;
+    }
+
+    // 接收 A 矩阵的行块
     double *A_local = alloc_matrix(rows, n_local);
-    MPI_Bcast(A_local, rows * n_local, MPI_DOUBLE, 0, MPI_COMM_WORLD);  // Simplified: in real 2D cyclic, each proc only gets its part
+    MPI_Scatterv(NULL, sendcounts, displs, MPI_DOUBLE, A_local, rows * n_local,
+                 MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+    free(sendcounts);
+    free(displs);
 
     // 计算 C_local = A_local × B_local
     double *C_local = alloc_matrix(rows, k_local);
@@ -364,9 +425,13 @@ int main(int argc, char **argv) {
     // 更新参数结构体
     params.compute_time = compute_time;
 
-    // 发送结果回根进程（通过隐式方式，在root处收集）
-    // 实际上在2D块循环实现中，我们需要更复杂的通信模式
-    // 简化处理：将计算结果返回到全局矩阵对应位置
+    // 发送 C_local 到 Root 进程（与 Root 进程的 MPI_Recv 配对）
+    MPI_Send(C_local, rows * k_local, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD);
+
+    // Participate in MPI_Reduce to get max compute time
+    double max_compute_time_dummy;
+    MPI_Reduce(&compute_time, &max_compute_time_dummy, 1, MPI_DOUBLE, MPI_MAX,
+               0, MPI_COMM_WORLD);
 
     free(A_local);
     free(B_local);
@@ -377,7 +442,7 @@ int main(int argc, char **argv) {
   MPI_Barrier(MPI_COMM_WORLD);
 
   // 清理自定义数据类型
-  MPI_Type_free(&MatrixParamsType);
+  MPI_Type_free(&MatrixParams::MPI_type);
 
   MPI_Finalize();
   return 0;

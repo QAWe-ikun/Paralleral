@@ -1,7 +1,12 @@
-#include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <time.h>
+#include <iostream>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <ctime>
+#include <cstring>
+#include <cctype>
+
+using namespace std;
 
 /* Serial-only matrix multiplication for benchmarking (1 process) */
 
