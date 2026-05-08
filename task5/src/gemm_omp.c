@@ -66,13 +66,13 @@ void gemm_serial(float *A, float *B, float *C, int M, int N, int K) {
  */
 void gemm_omp_default(float *A, float *B, float *C, int M, int N, int K,
                       int num_threads) {
-// 初始化 C 为零矩阵
+  // 初始化 C 为零矩阵
 #pragma omp parallel for num_threads(num_threads)
   for (int i = 0; i < M * K; i++) {
     C[i] = 0.0f;
   }
 
-// OpenMP 并行矩阵乘法（默认调度）
+  // OpenMP 并行矩阵乘法（默认调度）
 #pragma omp parallel for num_threads(num_threads) collapse(2)
   for (int i = 0; i < M; i++) {
     for (int j = 0; j < K; j++) {
@@ -97,13 +97,13 @@ void gemm_omp_default(float *A, float *B, float *C, int M, int N, int K,
  */
 void gemm_omp_static(float *A, float *B, float *C, int M, int N, int K,
                      int num_threads) {
-// 初始化 C 为零矩阵
+  // 初始化 C 为零矩阵
 #pragma omp parallel for num_threads(num_threads) schedule(static, 1)
   for (int i = 0; i < M * K; i++) {
     C[i] = 0.0f;
   }
 
-// OpenMP 并行矩阵乘法（静态调度）
+  // OpenMP 并行矩阵乘法（静态调度）
 #pragma omp parallel for num_threads(num_threads) schedule(static, 1)          \
     collapse(2)
   for (int i = 0; i < M; i++) {
@@ -129,13 +129,13 @@ void gemm_omp_static(float *A, float *B, float *C, int M, int N, int K,
  */
 void gemm_omp_dynamic(float *A, float *B, float *C, int M, int N, int K,
                       int num_threads) {
-// 初始化 C 为零矩阵
+  // 初始化 C 为零矩阵
 #pragma omp parallel for num_threads(num_threads) schedule(dynamic, 1)
   for (int i = 0; i < M * K; i++) {
     C[i] = 0.0f;
   }
 
-// OpenMP 并行矩阵乘法（动态调度）
+  // OpenMP 并行矩阵乘法（动态调度）
 #pragma omp parallel for num_threads(num_threads) schedule(dynamic, 1)         \
     collapse(2)
   for (int i = 0; i < M; i++) {
