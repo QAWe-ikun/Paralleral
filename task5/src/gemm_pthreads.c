@@ -87,22 +87,36 @@ void init_matrix(float *mat, int rows, int cols) {
 }
 
 /**
- * @brief 串行矩阵乘法（用于验证）
+ * @brief 串行矩阵乘法（用于验证，使用 B 转置优化）
  */
 void gemm_serial(float *A, float *B, float *C, int M, int N, int K) {
   // 初始化 C 为零矩阵
   memset(C, 0, M * K * sizeof(float));
 
-  // 串行矩阵乘法
+  // 分配 B 转置矩阵
+  float *Bt = (float *)malloc(K * N * sizeof(float));
+  if (!Bt) {
+    fprintf(stderr, "gemm_serial: Bt 内存分配失败\n");
+    return;
+  }
+
+  // 转置 B 矩阵
+  transpose_B(B, Bt, N, K);
+
+  // 串行矩阵乘法（使用 B 转置）
   for (int i = 0; i < M; i++) {
     for (int j = 0; j < K; j++) {
       float sum = 0.0f;
+      // 使用 Bt[j][p] 代替 B[p][j]，实现连续内存访问
       for (int p = 0; p < N; p++) {
-        sum += A[i * N + p] * B[p * K + j];
+        sum += A[i * N + p] * Bt[j * N + p];
       }
       C[i * K + j] = sum;
     }
   }
+
+  // 释放 Bt
+  free(Bt);
 }
 
 /**
