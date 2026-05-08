@@ -10,8 +10,6 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-
 
 /**
  * @brief 线程工作函数（静态调度）
@@ -159,9 +157,19 @@ int parallel_for_advanced(int start, int end, int increment,
   }
 
   // 分配线程和线程参数
-  pthread_t *threads = (pthread_t *)malloc(num_threads * sizeof(pthread_t));
-  thread_work_t *works =
-      (thread_work_t *)malloc(num_threads * sizeof(thread_work_t));
+  pthread_t *threads = NULL;
+  thread_work_t *works = NULL;
+
+  // 线程数为1时，直接串行执行（避免线程创建开销）
+  if (num_threads == 1) {
+    for (int i = start; i < end; i += increment) {
+      functor(i, arg);
+    }
+    return 0;
+  }
+
+  threads = (pthread_t *)malloc(num_threads * sizeof(pthread_t));
+  works = (thread_work_t *)malloc(num_threads * sizeof(thread_work_t));
 
   if (!threads || !works) {
     fprintf(stderr, "parallel_for: 内存分配失败\n");
