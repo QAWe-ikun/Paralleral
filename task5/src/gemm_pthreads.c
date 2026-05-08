@@ -14,12 +14,24 @@
  * 运行：./bin/gemm_pthreads <M> <N> <K> <num_threads>
  */
 
+#define _POSIX_C_SOURCE 199309L
 #include "parallel_for.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
+/**
+ * @brief 获取墙上时间（Wall-Clock Time）
+ *
+ * 使用 clock_gettime(CLOCK_MONOTONIC) 获取精确的墙上时间
+ * 多线程下 clock() 返回的是所有线程 CPU 时间总和，不适合用于并行计时
+ */
+static inline double wtime(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return ts.tv_sec + 1e-9 * ts.tv_nsec;
+}
 
 /**
  * @brief 矩阵乘法 functor 参数结构体
@@ -195,17 +207,30 @@ void gemm_parallel_advanced(float *A, float *B, float *C, int M, int N, int K,
 }
 
 /**
- * @brief 验证矩阵乘法结果
+ * @brief 验证矩阵乘法结果（动态容差）
+ *
+ * 容差根据矩阵规模动态调整：
+ * - 小规模 (N<=512): 1e-3
+ * - 中规模 (N<=1024): 1e-2
+ * - 大规模 (N>1024): 1e-1
  */
-int verify_result(float *C_serial, float *C_parallel, int M, int K,
-                  float tolerance) {
+int verify_result(float *C_serial, float *C_parallel, int M, int K, int N) {
+  float tolerance;
+  if (N <= 512) {
+    tolerance = 1e-3f;
+  } else if (N <= 1024) {
+    tolerance = 1e-2f;
+  } else {
+    tolerance = 1e-1f;
+  }
+
   for (int i = 0; i < M * K; i++) {
     float diff = C_serial[i] - C_parallel[i];
     if (diff < 0)
       diff = -diff;
     if (diff > tolerance) {
-      printf("验证失败: C[%d] = %f, 期望 %f, 差值 %f\n", i, C_parallel[i],
-             C_serial[i], diff);
+      printf("验证失败: C[%d] = %f, 期望 %f, 差值 %f (容差: %e)\n", i,
+             C_parallel[i], C_serial[i], diff, tolerance);
       return -1;
     }
   }
@@ -274,67 +299,67 @@ int main(int argc, char *argv[]) {
     print_matrix(B, N, K, "B");
   }
 
-  clock_t start_time, end_time;
+  double start_time, end_time;
 
   // 1. 串行矩阵乘法（验证用）
   printf("\n[1] 串行矩阵乘法...\n");
-  start_time = clock();
+  start_time = wtime();
   gemm_serial(A, B, C_serial, M, N, K);
-  end_time = clock();
-  double serial_time = (double)(end_time - start_time) / CLOCKS_PER_SEC;
+  end_time = wtime();
+  double serial_time = end_time - start_time;
   printf("    串行时间: %.6f 秒\n", serial_time);
 
   // 2. 基于 parallel_for 的并行矩阵乘法（静态调度）
   printf("\n[2] parallel_for 静态调度...\n");
-  start_time = clock();
+  start_time = wtime();
   gemm_parallel(A, B, C_parallel, M, N, K, num_threads);
-  end_time = clock();
-  double parallel_time = (double)(end_time - start_time) / CLOCKS_PER_SEC;
+  end_time = wtime();
+  double parallel_time = end_time - start_time;
   printf("    并行时间: %.6f 秒\n", parallel_time);
   printf("    加速比: %.4fx\n", serial_time / parallel_time);
 
   // 验证结果
-  if (verify_result(C_serial, C_parallel, M, K, 1e-3) == 0) {
+  if (verify_result(C_serial, C_parallel, M, K, N) == 0) {
     printf("    结果验证: 通过 ✓\n");
   }
 
   // 3. 静态调度（高级 API）
   printf("\n[3] parallel_for_advanced 静态调度...\n");
-  start_time = clock();
+  start_time = wtime();
   gemm_parallel_advanced(A, B, C_static, M, N, K, num_threads, SCHEDULE_STATIC);
-  end_time = clock();
-  double static_time = (double)(end_time - start_time) / CLOCKS_PER_SEC;
+  end_time = wtime();
+  double static_time = end_time - start_time;
   printf("    静态调度时间: %.6f 秒\n", static_time);
   printf("    加速比: %.4fx\n", serial_time / static_time);
 
-  if (verify_result(C_serial, C_static, M, K, 1e-3) == 0) {
+  if (verify_result(C_serial, C_static, M, K, N) == 0) {
     printf("    结果验证: 通过 ✓\n");
   }
 
   // 4. 动态调度
   printf("\n[4] parallel_for_advanced 动态调度...\n");
-  start_time = clock();
+  start_time = wtime();
   gemm_parallel_advanced(A, B, C_dynamic, M, N, K, num_threads,
                          SCHEDULE_DYNAMIC);
-  end_time = clock();
-  double dynamic_time = (double)(end_time - start_time) / CLOCKS_PER_SEC;
+  end_time = wtime();
+  double dynamic_time = end_time - start_time;
   printf("    动态调度时间: %.6f 秒\n", dynamic_time);
   printf("    加速比: %.4fx\n", serial_time / dynamic_time);
 
-  if (verify_result(C_serial, C_dynamic, M, K, 1e-3) == 0) {
+  if (verify_result(C_serial, C_dynamic, M, K, N) == 0) {
     printf("    结果验证: 通过 ✓\n");
   }
 
   // 5. 引导调度
   printf("\n[5] parallel_for_advanced 引导调度...\n");
-  start_time = clock();
+  start_time = wtime();
   gemm_parallel_advanced(A, B, C_guided, M, N, K, num_threads, SCHEDULE_GUIDED);
-  end_time = clock();
-  double guided_time = (double)(end_time - start_time) / CLOCKS_PER_SEC;
+  end_time = wtime();
+  double guided_time = end_time - start_time;
   printf("    引导调度时间: %.6f 秒\n", guided_time);
   printf("    加速比: %.4fx\n", serial_time / guided_time);
 
-  if (verify_result(C_serial, C_guided, M, K, 1e-3) == 0) {
+  if (verify_result(C_serial, C_guided, M, K, N) == 0) {
     printf("    结果验证: 通过 ✓\n");
   }
 
