@@ -31,8 +31,14 @@ for SIZE in "${MATRIX_SIZES[@]}"; do
     echo ""
     echo "--- 矩阵规模: ${SIZE}×${SIZE} × ${SIZE}×${SIZE} ---"
     for threads in "${THREAD_COUNTS[@]}"; do
-        echo -n "  线程数 ${threads}: "
-        ./bin/gemm_omp $SIZE $SIZE $SIZE $threads 2>&1 | grep "加速比" | head -1
+        echo "  线程数 ${threads}:"
+        OUTPUT=$(./bin/gemm_omp $SIZE $SIZE $SIZE $threads 2>&1)
+        DEFAULT_SPEEDUP=$(echo "$OUTPUT" | grep "OpenMP 默认" | awk '{print $NF}')
+        STATIC_SPEEDUP=$(echo "$OUTPUT" | grep "OpenMP 静态" | awk '{print $NF}')
+        DYNAMIC_SPEEDUP=$(echo "$OUTPUT" | grep "OpenMP 动态" | awk '{print $NF}')
+        echo "    默认调度: ${DEFAULT_SPEEDUP}"
+        echo "    静态调度: ${STATIC_SPEEDUP}"
+        echo "    动态调度: ${DYNAMIC_SPEEDUP}"
     done
 done
 
