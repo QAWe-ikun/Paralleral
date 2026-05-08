@@ -13,6 +13,9 @@ obj/
 # bin
 **/bin/
 
+# Library
+**/lib/
+
 # Claude
 .claude/
 CLAUDE.md

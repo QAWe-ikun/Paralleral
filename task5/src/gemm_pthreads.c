@@ -25,23 +25,41 @@
  * @brief 矩阵乘法 functor 参数结构体
  */
 typedef struct {
-  float *A; ///< 矩阵 A (M×N)
-  float *B; ///< 矩阵 B (N×K)
-  float *C; ///< 矩阵 C (M×K)
-  int N;    ///< 内维
-  int K;    ///< 列数
+  float *A;  ///< 矩阵 A (M×N)
+  float *B;  ///< 矩阵 B (N×K)
+  float *Bt; ///< 矩阵 B 的转置 (K×N)
+  float *C;  ///< 矩阵 C (M×K)
+  int N;     ///< 内维
+  int K;     ///< 列数
 } gemm_args_t;
 
 /**
- * @brief 矩阵乘法 functor 函数
+ * @brief 转置矩阵 B
+ *
+ * Bt[j][p] = B[p][j]
+ * 转置后，Bt 的行优先访问等价于 B 的列优先访问
+ */
+void transpose_B(float *B, float *Bt, int N, int K) {
+  for (int i = 0; i < N; i++) {
+    for (int j = 0; j < K; j++) {
+      Bt[j * N + i] = B[i * K + j];
+    }
+  }
+}
+
+/**
+ * @brief 矩阵乘法 functor 函数（优化版：使用 B 转置）
  *
  * 计算矩阵 C 的第 idx 行
  * C[idx, :] = A[idx, :] × B
+ *
+ * 优化：使用 B 的转置 Bt，将 B[p][j] 的列访问转换为 Bt[j][p] 的行访问
+ * 这样在内层循环中，Bt[j][p] 是连续内存访问，缓存命中率更高
  */
 void *gemm_functor(int idx, void *args) {
   gemm_args_t *gemm_args = (gemm_args_t *)args;
   float *A = gemm_args->A;
-  float *B = gemm_args->B;
+  float *Bt = gemm_args->Bt; // 使用转置后的 B
   float *C = gemm_args->C;
   int N = gemm_args->N;
   int K = gemm_args->K;
@@ -49,8 +67,9 @@ void *gemm_functor(int idx, void *args) {
   // 计算 C 的第 idx 行
   for (int j = 0; j < K; j++) {
     float sum = 0.0f;
+    // 使用 Bt[j][p] 代替 B[p][j]，实现连续内存访问
     for (int p = 0; p < N; p++) {
-      sum += A[idx * N + p] * B[p * K + j];
+      sum += A[idx * N + p] * Bt[j * N + p];
     }
     C[idx * K + j] = sum;
   }
@@ -87,30 +106,66 @@ void gemm_serial(float *A, float *B, float *C, int M, int N, int K) {
 }
 
 /**
- * @brief 基于 parallel_for 的并行矩阵乘法
+ * @brief 基于 parallel_for 的并行矩阵乘法（优化版：使用 B 转置）
  */
 void gemm_parallel(float *A, float *B, float *C, int M, int N, int K,
                    int num_threads) {
   // 初始化 C 为零矩阵
   memset(C, 0, M * K * sizeof(float));
 
+  // 分配 B 转置矩阵
+  float *Bt = (float *)malloc(K * N * sizeof(float));
+  if (!Bt) {
+    fprintf(stderr, "gemm_parallel: Bt 内存分配失败\n");
+    return;
+  }
+
+  // 转置 B 矩阵
+  transpose_B(B, Bt, N, K);
+
   // 设置 functor 参数
-  gemm_args_t args = {A, B, C, N, K};
+  gemm_args_t args;
+  args.A = A;
+  args.B = B;
+  args.Bt = Bt;
+  args.C = C;
+  args.N = N;
+  args.K = K;
 
   // 使用 parallel_for 并行计算每一行
   parallel_for(0, M, 1, gemm_functor, (void *)&args, num_threads);
+
+  // 释放 Bt
+  free(Bt);
 }
 
 /**
- * @brief 基于 parallel_for 高级 API 的矩阵乘法（支持调度策略）
+ * @brief 基于 parallel_for 高级 API 的矩阵乘法（支持调度策略，优化版：使用 B
+ * 转置）
  */
 void gemm_parallel_advanced(float *A, float *B, float *C, int M, int N, int K,
                             int num_threads, schedule_type_t schedule) {
   // 初始化 C 为零矩阵
   memset(C, 0, M * K * sizeof(float));
 
+  // 分配 B 转置矩阵
+  float *Bt = (float *)malloc(K * N * sizeof(float));
+  if (!Bt) {
+    fprintf(stderr, "gemm_parallel_advanced: Bt 内存分配失败\n");
+    return;
+  }
+
+  // 转置 B 矩阵
+  transpose_B(B, Bt, N, K);
+
   // 设置 functor 参数
-  gemm_args_t args = {A, B, C, N, K};
+  gemm_args_t args;
+  args.A = A;
+  args.B = B;
+  args.Bt = Bt;
+  args.C = C;
+  args.N = N;
+  args.K = K;
 
   // 设置并行配置
   parallel_config_t config;
@@ -120,6 +175,9 @@ void gemm_parallel_advanced(float *A, float *B, float *C, int M, int N, int K,
 
   // 使用 parallel_for_advanced 并行计算每一行
   parallel_for_advanced(0, M, 1, gemm_functor, (void *)&args, &config);
+
+  // 释放 Bt
+  free(Bt);
 }
 
 /**
